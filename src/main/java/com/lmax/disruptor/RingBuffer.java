@@ -35,6 +35,8 @@ abstract class RingBufferFields<E> extends RingBufferPad
 
     static
     {
+        // 获取一个Object数组元素在内存中的大小
+        // 在JVM不启用对象指针压缩的时候（vm参数添加-XX:-UseCompressedOops），scale为8 如果启动对象指针压缩，scale为4
         final int scale = UNSAFE.arrayIndexScale(Object[].class);
         if (4 == scale)
         {
@@ -42,19 +44,24 @@ abstract class RingBufferFields<E> extends RingBufferPad
         }
         else if (8 == scale)
         {
+            // 1 << 3 等于 8
             REF_ELEMENT_SHIFT = 3;
         }
         else
         {
             throw new IllegalStateException("Unknown pointer size");
         }
+        // 缓冲垫数量
         BUFFER_PAD = 128 / scale;
         // Including the buffer pad in the array base offset
+        // BUFFER_PAD << REF_ELEMENT_SHIFT 等于 128
         REF_ARRAY_BASE = UNSAFE.arrayBaseOffset(Object[].class) + (BUFFER_PAD << REF_ELEMENT_SHIFT);
     }
 
     private final long indexMask;
+    // 保存Event的数组，也就保存Event的环
     private final Object[] entries;
+    // 环的长度
     protected final int bufferSize;
     protected final Sequencer sequencer;
 
@@ -75,6 +82,8 @@ abstract class RingBufferFields<E> extends RingBufferPad
         }
 
         this.indexMask = bufferSize - 1;
+        // 前后添加BUFFER_PAD个缓冲数组，也就是填充128个字节
+        // 避免其它变量与entries数组元素在一个缓存行内，避免伪共享问题
         this.entries = new Object[sequencer.getBufferSize() + 2 * BUFFER_PAD];
         fill(eventFactory);
     }
@@ -90,6 +99,7 @@ abstract class RingBufferFields<E> extends RingBufferPad
     @SuppressWarnings("unchecked")
     protected final E elementAt(long sequence)
     {
+        // 相当于 return entries[ sequence % bufferSize + BUFFER_PAD]，但是注释的方式效率低
         return (E) UNSAFE.getObject(entries, REF_ARRAY_BASE + ((sequence & indexMask) << REF_ELEMENT_SHIFT));
     }
 }

@@ -36,10 +36,12 @@ public final class MultiProducerSequencer extends AbstractSequencer
     private static final long BASE = UNSAFE.arrayBaseOffset(int[].class);
     private static final long SCALE = UNSAFE.arrayIndexScale(int[].class);
 
+    // 缓存的消费者中最小序号值，相当于SingleProducerSequencerFields的cachedValue
     private final Sequence gatingSequenceCache = new Sequence(Sequencer.INITIAL_CURSOR_VALUE);
 
     // availableBuffer tracks the state of each ringbuffer slot
     // see below for more details on the approach
+    // 长度和RingBuffer保持一致，用来标记哪些序列号下的Event发布成功
     private final int[] availableBuffer;
     private final int indexMask;
     private final int indexShift;
@@ -124,9 +126,15 @@ public final class MultiProducerSequencer extends AbstractSequencer
             current = cursor.get();
             next = current + n;
 
+            //减掉RingBuffer的总的buffer值，用于判断是否出现‘覆盖’
             long wrapPoint = next - bufferSize;
+            //从后面代码分析可得：cachedValue就是缓存的消费者中最小序号值，他不是当前最新的‘消费者中最小序号值’，而是上次程序进入到下面的if判定代码段时，被赋值的当时的‘消费者中最小序号值’
+            //这样做的好处在于：在判定是否出现覆盖的时候，不用每次都调用getMininumSequence计算‘消费者中的最小序号值’，从而节约开销。只要确保当生产者的节奏大于了缓存的cachedGateingSequence一个bufferSize时，从新获取一下 getMinimumSequence()即可。
             long cachedGatingSequence = gatingSequenceCache.get();
 
+            //(wrapPoint > cachedGatingSequence) ： 当生产者已经超过上一次缓存的‘消费者中最小序号值’（cachedGatingSequence）一个‘Ring’大小（bufferSize），需要重新获取cachedGatingSequence，避免当生产者一直在生产，但是消费者不再消费的情况下，出现‘覆盖’
+            //(cachedGatingSequence > nextValue) ： https://github.com/LMAX-Exchange/disruptor/issues/76
+            // 这里判断就是生产者生产的填满BingBUffer，需要等待消费者消费
             if (wrapPoint > cachedGatingSequence || cachedGatingSequence > current)
             {
                 long gatingSequence = Util.getMinimumSequence(gatingSequences, current);
@@ -139,6 +147,7 @@ public final class MultiProducerSequencer extends AbstractSequencer
 
                 gatingSequenceCache.set(gatingSequence);
             }
+            // 使用cas保证只有一个生产者能拿到next
             else if (cursor.compareAndSet(current, next))
             {
                 break;
@@ -214,7 +223,9 @@ public final class MultiProducerSequencer extends AbstractSequencer
     @Override
     public void publish(final long sequence)
     {
+        // 记录发布情况
         setAvailable(sequence);
+        // 等待策略的唤醒
         waitStrategy.signalAllWhenBlocking();
     }
 
@@ -252,6 +263,8 @@ public final class MultiProducerSequencer extends AbstractSequencer
      */
     private void setAvailable(final long sequence)
     {
+        // calculateIndex(sequence)：获取序号
+        // calculateAvailabilityFlag(sequence)：RingBuffer的圈数
         setAvailableBufferValue(calculateIndex(sequence), calculateAvailabilityFlag(sequence));
     }
 
@@ -259,6 +272,7 @@ public final class MultiProducerSequencer extends AbstractSequencer
     {
         long bufferAddress = (index * SCALE) + BASE;
         UNSAFE.putOrderedInt(availableBuffer, bufferAddress, flag);
+        // 上面相当于 availableBuffer[index] = flag 的高性能版
     }
 
     /**
@@ -268,8 +282,10 @@ public final class MultiProducerSequencer extends AbstractSequencer
     public boolean isAvailable(long sequence)
     {
         int index = calculateIndex(sequence);
+        // 计算圈数
         int flag = calculateAvailabilityFlag(sequence);
         long bufferAddress = (index * SCALE) + BASE;
+        // UNSAFE.getIntVolatile(availableBuffer, bufferAddress)：相当于availableBuffer[sequence] 的高性能版
         return UNSAFE.getIntVolatile(availableBuffer, bufferAddress) == flag;
     }
 
@@ -278,6 +294,7 @@ public final class MultiProducerSequencer extends AbstractSequencer
     {
         for (long sequence = lowerBound; sequence <= availableSequence; sequence++)
         {
+            // 从低往高找，找到第一个未发布成功的
             if (!isAvailable(sequence))
             {
                 return sequence - 1;
@@ -289,6 +306,7 @@ public final class MultiProducerSequencer extends AbstractSequencer
 
     private int calculateAvailabilityFlag(final long sequence)
     {
+        // 相当于 sequence % bufferSize ，但是位操作更快
         return (int) (sequence >>> indexShift);
     }
 

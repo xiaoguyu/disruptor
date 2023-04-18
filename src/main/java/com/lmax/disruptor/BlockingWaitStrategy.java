@@ -36,6 +36,8 @@ public final class BlockingWaitStrategy implements WaitStrategy
         throws AlertException, InterruptedException
     {
         long availableSequence;
+        // 等待生产者
+        // 要拿的需要大于已生产的，则自旋等待
         if (cursorSequence.get() < sequence)
         {
             lock.lock();
@@ -52,10 +54,13 @@ public final class BlockingWaitStrategy implements WaitStrategy
                 lock.unlock();
             }
         }
-
+        // 等待依赖的消费者
+        // 依赖这个实现消费者的分组、依赖执行
+        // dependentSequence是将多个sequence合并成FixedSequenceGroup，get方法返回的最慢的消费者的序号
         while ((availableSequence = dependentSequence.get()) < sequence)
         {
             barrier.checkAlert();
+            // 调用Thread.onSpinWait()方法，此方法jdk9才有
             ThreadHints.onSpinWait();
         }
 

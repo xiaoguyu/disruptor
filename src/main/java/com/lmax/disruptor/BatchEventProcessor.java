@@ -156,14 +156,17 @@ public final class BatchEventProcessor<T>
         {
             try
             {
+                // 获取最大可用序列
                 final long availableSequence = sequenceBarrier.waitFor(nextSequence);
                 if (batchStartAware != null)
                 {
                     batchStartAware.onBatchStart(availableSequence - nextSequence + 1);
                 }
 
+                // 执行消费逻辑
                 while (nextSequence <= availableSequence)
                 {
+                    // dataProvider就是RingBuffer
                     event = dataProvider.get(nextSequence);
                     eventHandler.onEvent(event, nextSequence, nextSequence == availableSequence);
                     nextSequence++;
